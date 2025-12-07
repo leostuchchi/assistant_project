@@ -1,0 +1,38 @@
+# Docker
+docker-compose.override.yml
+
+# Data
+data/
+*.log
+*.bak
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+backups/*.sql.gz
+!backups/.gitkeep
+
+# Temp
+tmp/
+temp/
+
+# Python
+__pycache__/
+*.pyc
+.python-version
+
+# Models (крупные файлы)
+models/*.bin
+models/*.gguf

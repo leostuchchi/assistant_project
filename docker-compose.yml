@@ -1,0 +1,160 @@
+
+
+services:
+  # ============================================
+  # 1. POSTGRESQL - ОСНОВНАЯ БАЗА ДАННЫХ
+  # ============================================
+  postgres:
+    container_name: personal-assistant-postgres
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: personal_assistant
+      POSTGRES_USER: pa_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-Admin_Pass_123!}
+      PGDATA: '/var/lib/postgresql/data/pgdata'
+    ports:
+      - '${DB_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./init_scripts/init_extensions.sql:/docker-entrypoint-initdb.d/02-extensions.sql
+      - ./init_scripts/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pa_admin -d personal_assistant']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - personal-assistant-network
+
+  # ============================================
+  # 2. REDIS - КЭШ И СЕССИИ
+  # ============================================
+  redis:
+    container_name: personal-assistant-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - personal-assistant-network
+
+  # ============================================
+  # 3. OLLAMA - LLM ДЛЯ РЕКОМЕНДАЦИЙ
+  # ============================================
+  ollama:
+    container_name: personal-assistant-ollama
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - '11435:11434'  # Измените внешний порт на 11435
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./models:/models
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_MODELS: /models
+      OLLAMA_KEEP_ALIVE: 24h
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:11434/api/tags']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '2'
+        reservations:
+          memory: 4G
+          cpus: '1'
+    networks:
+      - personal-assistant-network
+
+  # ============================================
+  # 4. INIT-DB - ОДНОРАЗОВАЯ ИНИЦИАЛИЗАЦИЯ БД
+  # ============================================
+  init-db:
+    container_name: personal-assistant-init-db
+    image: postgres:15-alpine
+    restart: 'no'
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: personal_assistant
+      PGUSER: pa_admin
+      PGPASSWORD: ${DB_PASSWORD:-Admin_Pass_123!}
+    volumes:
+      - ./init_scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+      - ./init_scripts/init_extensions.sql:/docker-entrypoint-initdb.d/extensions.sql
+    command: >
+      sh -c "
+        echo '⏳ Waiting for PostgreSQL to be ready...' &&
+        until pg_isready -h postgres -p 5432 -U pa_admin; do 
+          echo 'PostgreSQL is not ready yet. Waiting...';
+          sleep 2; 
+        done &&
+        echo '✅ PostgreSQL is ready!' &&
+        echo '🔍 Checking if database needs initialization...' &&
+        if psql -c '\dt' | grep -q 'users'; then
+          echo '📊 Database already initialized. Skipping...';
+        else
+          echo '🚀 Initializing database...';
+          psql -f /docker-entrypoint-initdb.d/init_db.sql;
+          psql -f /docker-entrypoint-initdb.d/extensions.sql;
+          echo '🎉 Database initialized successfully!';
+        fi
+      "
+    networks:
+      - personal-assistant-network
+    profiles:
+      - init
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${VOLUME_PATH:-./data}/postgres
+      o: bind
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${VOLUME_PATH:-./data}/redis
+      o: bind
+  ollama_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${VOLUME_PATH:-./data}/ollama
+      o: bind
+
+networks:
+  personal-assistant-network:
+    driver: bridge
+    # Используем другую подсеть чтобы избежать конфликтов
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET:-172.25.0.0/16}
